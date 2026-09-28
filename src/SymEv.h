@@ -40,6 +40,7 @@ struct SymEv {
     NONDET,
 
     LOAD,
+    ROWE_LOAD,
     LOAD_AWAIT,
     STORE,
     FULLMEM, /* Observe & clobber everything */
@@ -93,6 +94,7 @@ struct SymEv {
   static SymEv Nondet(int count) { return {NONDET, count}; }
 
   static SymEv Load(SymAddrSize addr) { return {LOAD, addr}; }
+  static SymEv RoweLoad(SymAddrSize addr) { return {ROWE_LOAD, addr}; }
   static SymEv LoadAwait(SymAddrSize addr, AwaitCond cond) {
     return {LOAD_AWAIT, addr, std::move(cond)};
   }

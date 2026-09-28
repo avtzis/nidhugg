@@ -434,7 +434,7 @@ protected:
   public:
     Event(const IID<IPid> &iid, sym_ty sym = {})
       : iid(iid), origin_iid(iid), md(0), clock(), may_conflict(false),
-        sym(std::move(sym)), sleep_branch_trace_count(0) {}
+        sym(std::move(sym)), sleep_branch_trace_count(0), last_update(-1) {}
     /* The identifier for the first event in this event sequence. */
     IID<IPid> iid;
     /* The IID of the program instruction which is the origin of this
@@ -492,6 +492,7 @@ protected:
      * explored traces.
      */
     uint64_t sleep_branch_trace_count;
+    int last_update;
   };
 
   /* The fixed prefix of events in the current execution. This may be
@@ -631,13 +632,15 @@ protected:
    */
   void add_lock_fail_race(int event);
   /* Check if two events in the current prefix are in conflict. */
-  bool do_events_conflict(int i, int j) const;
-  bool do_events_conflict(const Event &fst, const Event &snd) const;
+  bool do_events_conflict(int i, int j, bool assertion=false) const;
+  bool do_events_conflict(const Event &fst, const Event &snd, bool assertion=false) const;
   /* Check if two symbolic events conflict. */
   bool do_events_conflict(IPid fst_pid, const sym_ty &fst,
-                          IPid snd_pid, const sym_ty &snd) const;
+                          IPid snd_pid, const sym_ty &snd, bool assertion=false) const;
   bool do_symevs_conflict(IPid fst_pid, const SymEv &fst,
-                          IPid snd_pid, const SymEv &snd) const;
+                          IPid snd_pid, const SymEv &snd, bool assertion=false) const;
+  void mutate_sleeper(IPid fst_pid, const sym_ty &fst,
+                      IPid snd_pid, sym_ty &snd) const;
   /* Check if events fst and snd are in an observed race with thd as an
    * observer.
    */
@@ -731,7 +734,7 @@ protected:
   struct obs_sleep {
     struct sleeper {
       IPid pid;
-      const sym_ty *sym;
+      sym_ty sym;
       Option<SymAddrSize> not_if_read;
     };
     std::vector<struct sleeper> sleep;
