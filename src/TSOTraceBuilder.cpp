@@ -320,7 +320,7 @@ bool TSOTraceBuilder::reset(){
    */
   if(conf.dpor_algorithm != Configuration::SOURCE){
     if (conf.memory_model != Configuration::TSO) {
-    check_symev_vclock_equiv();
+      check_symev_vclock_equiv();
     } else {}
   }
 #endif
@@ -1023,8 +1023,8 @@ bool TSOTraceBuilder::load(const SymAddrSize &ml){
   if (is_rowe) {
     if (!record_symbolic(SymEv::RoweLoad(ml))) return false;
   } else {
-  if (!record_symbolic(SymEv::Load(ml))) return false;
-}
+    if (!record_symbolic(SymEv::Load(ml))) return false;
+  }
 
   if(dryrun){
     assert(prefix_idx+1 < int(prefix.len()));
@@ -1040,9 +1040,9 @@ bool TSOTraceBuilder::load(const SymAddrSize &ml){
   curev().may_conflict = true;
 
   if (is_rowe) {
-  for(int i = int(threads[ipid].store_buffer.size())-1; 0 <= i; --i){
-    if(threads[ipid].store_buffer[i].ml.addr == ml.addr){
-      threads[ipid].store_buffer[i].last_rowe = prefix_idx;
+    for(int i = int(threads[ipid].store_buffer.size())-1; 0 <= i; --i){
+      if(threads[ipid].store_buffer[i].ml.addr == ml.addr){
+        threads[ipid].store_buffer[i].last_rowe = prefix_idx;
         break;
       }
     }
@@ -1062,8 +1062,8 @@ void TSOTraceBuilder::do_load(const SymAddrSize &ml){
     for(SymAddr b : ml){
       A.insert(b);
     }
-      return;
-    }
+    return;
+  }
   IPid ipid = curev().iid.get_pid();
 
   /* Load from memory */
