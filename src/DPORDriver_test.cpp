@@ -265,9 +265,21 @@ namespace DPORDriver_test {
       return retval;
     }
 
+    int errors_count = 0;
     std::list<const Trace*> sts, ots;
-    for (const Trace *t : source.all_traces) if(t->has_errors()) sts.push_back(t);
-    for (const Trace *t : optimal.all_traces) if(t->has_errors()) ots.push_back(t);
+    for (const Trace *t : source.all_traces) {
+      if(t->has_errors() && t->get_errors().size() - 1 == errors_count) {
+        sts.push_back(t);
+        ++errors_count;
+      }
+    }
+    errors_count = 0;
+    for (const Trace *t : optimal.all_traces) {
+      if(t->has_errors() && t->get_errors().size() - 1 == errors_count) {
+        ots.push_back(t);
+        ++errors_count;
+      }
+    }
 
     for (auto sti = sts.begin(); sti != sts.end();) {
       auto oti = std::find_if(ots.begin(), ots.end(), [&sti](const Trace *ot){

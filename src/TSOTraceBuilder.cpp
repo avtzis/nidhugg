@@ -189,21 +189,18 @@ bool TSOTraceBuilder::schedule(int *proc, int *aux, int *alt, bool *dryrun){
    * threads.
    */
   const unsigned sz = threads.size();
-  unsigned p;
-  for(p = 1; p < sz; p += 2){ // Loop through auxiliary threads
-    if(threads[p].available && !threads[p].sleeping &&
-       (conf.max_search_depth < 0 || threads[p].last_event_index() < conf.max_search_depth)){
-      threads[p].event_indices.push_back(++prefix_idx);
+  for (unsigned p = 0; p < sz; p += 2) {
+    unsigned q = p + 1;
+    if(threads[q].available && !threads[q].sleeping &&
+       (conf.max_search_depth < 0 || threads[q].last_event_index() < conf.max_search_depth)){
+      threads[q].event_indices.push_back(++prefix_idx);
       assert(prefix_idx == int(prefix.len()));
-      prefix.push(Branch(IPid(p)),
-                  Event(IID<IPid>(IPid(p),threads[p].last_event_index())));
-      *proc = p/2;
+      prefix.push(Branch(IPid(q)),
+                  Event(IID<IPid>(IPid(q),threads[q].last_event_index())));
+      *proc = q/2;
       *aux = 0;
       return true;
     }
-  }
-
-  for(p = 0; p < sz; p += 2){ // Loop through real threads
     if(threads[p].available && !threads[p].sleeping &&
        (conf.max_search_depth < 0 || threads[p].last_event_index() < conf.max_search_depth)){
       threads[p].event_indices.push_back(++prefix_idx);
@@ -2898,6 +2895,15 @@ wakeup_sequence(const Race &race) const{
   VClock<IPid> exclude_clock
     (std::vector<int>(threads.size(), std::numeric_limits<int>::max()));
 
+  std::vector<std::pair<IPid, SymAddrSize>> excluded_updates; // VecSet?
+  if (conf.memory_model == Configuration::TSO) {
+    for (auto &se : prefix[i].sym) {
+      if (symev_is_store(se)) {
+        excluded_updates.push_back({prefix[i].iid.get_pid(), se.addr()});
+      }
+    }
+  }
+
   for (int k = i + 1; k < int(prefix.len()); ++k){
     assert(exclude == exclude_end || int_fast64_t(*exclude) >= k);
       const IID<IPid> &kiid = prefix[k].iid;
@@ -2911,13 +2917,15 @@ wakeup_sequence(const Race &race) const{
     } else if (prefix[k].clock.intersects_below(exclude_clock)) {
       /* continue */
     } else if (!first.clock.leq(prefix[k].clock) &&
-              (conf.memory_model != Configuration::TSO || k < j)) {
+              (true || conf.memory_model != Configuration::TSO || k < j)) {
       auto symbranch = branch_with_symbolic_data(k);
-      for (auto &se : symbranch.sym) {
-        if (se.kind == SymEv::LOAD
-          && prefix[k].last_update == i
-          && kiid.get_pid() + 1 == prefix[i].iid.get_pid()) {
-          se.kind = SymEv::ROWE_LOAD;
+      for (auto &ke : symbranch.sym) {
+        if (ke.kind == SymEv::LOAD) {
+          for (auto &eu : excluded_updates) {
+            if (kiid.get_pid() + 1 == eu.first && ke.addr().overlaps(eu.second)) {
+              ke.kind = SymEv::ROWE_LOAD;
+            }
+          }
         }
       }
       v.emplace_back(symbranch);
@@ -2930,6 +2938,12 @@ wakeup_sequence(const Race &race) const{
           observers.push_back(&prefix[k]);
         } else if (race.kind == Race::OBSERVED) {
           notobs.emplace_back(branch_with_symbolic_data(k));
+        }
+      }
+    } else if (conf.memory_model == Configuration::TSO && first.clock.leq(prefix[k].clock)) {
+      for (auto &se : prefix[k].sym) {
+        if (symev_is_store(se)) {
+          excluded_updates.push_back({prefix[k].iid.get_pid(), se.addr()});
         }
       }
     }

@@ -3462,6 +3462,8 @@ void Interpreter::abort(){
   TB.cancel_replay();
   for(unsigned i = 0; i < Threads.size(); ++i){
     TB.mark_unavailable(i);
+    if (conf.memory_model == Configuration::TSO)
+      TB.mark_unavailable(i, 0);
   }
   clearAllStacks();
 }
