@@ -88,6 +88,8 @@ struct SymEv {
   } arg2;
   bool _rmw_result_used;
   SymData::block_type _expected, _written;
+  int pending_updates;
+  int pu_counter;
 
   SymEv() : kind(NONE) {}
   static SymEv None() { return {NONE, {}}; }
@@ -95,6 +97,7 @@ struct SymEv {
 
   static SymEv Load(SymAddrSize addr) { return {LOAD, addr}; }
   static SymEv RoweLoad(SymAddrSize addr) { return {ROWE_LOAD, addr}; }
+  static SymEv RoweLoad(SymAddrSize addr, int pu) { return {ROWE_LOAD, addr, pu}; }
   static SymEv LoadAwait(SymAddrSize addr, AwaitCond cond) {
     return {LOAD_AWAIT, addr, std::move(cond)};
   }
@@ -180,6 +183,7 @@ struct SymEv {
 
 private:
   SymEv(enum kind kind, union arg arg) : kind(kind), arg(arg) {}
+  SymEv(enum kind kind, union arg arg, int pu) : kind(kind), arg(arg), pending_updates(pu), pu_counter(pu) {}
   SymEv(enum kind kind, union arg arg, AwaitCond cond)
     : kind(kind), arg(arg), arg2(cond.op),
     _expected(std::move(cond.operand)) {}

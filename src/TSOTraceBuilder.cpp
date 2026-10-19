@@ -1007,18 +1007,19 @@ bool TSOTraceBuilder::xchg_await_fail(const SymData &sd, AwaitCond cond) {
 }
 
 bool TSOTraceBuilder::load(const SymAddrSize &ml){
-  IPid ipid = curev().iid.get_pid();
+  IPid ipid = dryrun ? prefix[prefix_idx+1].sleep[dry_sleepers-1] : curev().iid.get_pid();
 
   bool is_rowe = false;
+  unsigned ml_writes = 0;
   for(int i = int(threads[ipid].store_buffer.size())-1; 0 <= i; --i){
     if(threads[ipid].store_buffer[i].ml.addr == ml.addr){
       is_rowe = true;
-      break;
+      ++ml_writes;
     }
   }
 
   if (is_rowe) {
-    if (!record_symbolic(SymEv::RoweLoad(ml))) return false;
+    if (!record_symbolic(SymEv::RoweLoad(ml, ml_writes))) return false;
   } else {
     if (!record_symbolic(SymEv::Load(ml))) return false;
   }
@@ -1815,13 +1816,12 @@ void
 TSOTraceBuilder::obs_sleep_wake(struct obs_sleep &sleep, const Event &e) const{
   if (conf.memory_model == Configuration::TSO) {
     assert(!conf.commute_rmws);
-    if (e.wakeup.size()) {
-      for (unsigned i = 0; i < sleep.sleep.size();) {
-        if (e.wakeup.count(sleep.sleep[i].pid)) {
-          unordered_vector_delete(sleep.sleep, i);
-        } else {
-          ++i;
-        }
+    for (unsigned i = 0; i < sleep.sleep.size();) {
+      if (e.wakeup.count(sleep.sleep[i].pid)) {
+        unordered_vector_delete(sleep.sleep, i);
+      } else {
+        mutate_sleeper(e.iid.get_pid(), e.sym, sleep.sleep[i].pid, sleep.sleep[i].sym);
+        ++i;
       }
     }
   } else {
@@ -1913,7 +1913,7 @@ TSOTraceBuilder::obs_sleep_wake(struct obs_sleep &sleep,
   }
 }
 
-void TSOTraceBuilder::mutate_sleeper
+bool TSOTraceBuilder::mutate_sleeper
 (IPid fst_pid, const sym_ty &fst,
  IPid slp_pid, sym_ty &slp) const {
   for (const SymEv &fe : fst) {
@@ -1921,11 +1921,16 @@ void TSOTraceBuilder::mutate_sleeper
       if (fe.has_addr() && se.has_addr()
        && fe.addr().overlaps(se.addr())
        && fst_pid == slp_pid + 1
-       && symev_is_store(fe) && se.kind == SymEv::ROWE_LOAD) {
+       && symev_is_store(fe) && se.kind == SymEv::ROWE_LOAD
+       && --se.pu_counter <= 0) {
+        assert(se.pu_counter == 0);
         se.kind = SymEv::LOAD;
+        se.pu_counter = se.pending_updates;
+        return true;
       }
     }
   }
+  return false;
 }
 
 static void clear_observed(SymEv &e){
@@ -2924,6 +2929,16 @@ wakeup_sequence(const Race &race) const{
           for (auto &eu : excluded_updates) {
             if (kiid.get_pid() + 1 == eu.first && ke.addr().overlaps(eu.second)) {
               ke.kind = SymEv::ROWE_LOAD;
+              ke.pending_updates = ke.pu_counter = 0;
+              break;
+            }
+          }
+        }
+        if (ke.kind == SymEv::ROWE_LOAD) {
+          for (auto &eu : excluded_updates) {
+            if (kiid.get_pid() + 1 == eu.first && ke.addr().overlaps(eu.second)) {
+              ++ke.pending_updates;
+              ke.pu_counter = ke.pending_updates;
             }
           }
         }

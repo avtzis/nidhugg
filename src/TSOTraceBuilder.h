@@ -639,7 +639,7 @@ protected:
                           IPid snd_pid, const sym_ty &snd, bool assertion=false) const;
   bool do_symevs_conflict(IPid fst_pid, const SymEv &fst,
                           IPid snd_pid, const SymEv &snd, bool assertion=false) const;
-  void mutate_sleeper(IPid fst_pid, const sym_ty &fst,
+  bool mutate_sleeper(IPid fst_pid, const sym_ty &fst,
                       IPid snd_pid, sym_ty &snd) const;
   /* Check if events fst and snd are in an observed race with thd as an
    * observer.
