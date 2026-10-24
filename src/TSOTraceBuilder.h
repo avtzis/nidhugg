@@ -584,7 +584,7 @@ protected:
    */
   void observe_memory(SymAddr ml, ByteInfo &m,
                       VecSet<int> &seen_accesses,
-                      VecSet<std::pair<int,int>> &seen_pairs,
+                      VecSet<std::tuple<int,int,int>> &seen_pairs,
                       bool is_update);
   /* Adds the races implied by an await at position pos in prefix to
    * races. pos may be prefix.len() (corresponding to a deadlocked
@@ -620,9 +620,9 @@ protected:
    */
   void add_noblock_race(int event);
   /* Adds an observed race between first and second that is observed by
-   * the current event.
+   * a valid witness.
    */
-  void add_observed_race(int first, int second);
+  void add_observed_race(int first, int second, int witness);
   /* Add a race between two successful mutex acquisitions (lock and the
    * current event). Unlock is the unlock event between them.
    */
@@ -641,20 +641,21 @@ protected:
                           IPid snd_pid, const SymEv &snd, bool assertion=false) const;
   bool mutate_sleeper(IPid fst_pid, const sym_ty &fst,
                       IPid snd_pid, sym_ty &snd) const;
+  bool is_observed_conflict(int i, int j, int k) const;
   /* Check if events fst and snd are in an observed race with thd as an
    * observer.
    */
   bool is_observed_conflict(const Event &fst, const Event &snd,
-                            const Event &thd) const;
+                            const Event &thd, bool rowe_obs) const;
   /* Check if two symbolic events are in an observed race with a third
    * as an observer.
    */
   bool is_observed_conflict(IPid fst_pid, const sym_ty &fst,
                             IPid snd_pid, const sym_ty &snd,
-                            IPid thd_pid, const sym_ty &thd) const;
+                            IPid thd_pid, const sym_ty &thd, bool rowe_obs) const;
   bool is_observed_conflict(IPid fst_pid, const SymEv &fst,
                             IPid snd_pid, const SymEv &snd,
-                            IPid thd_pid, const SymEv &thd) const;
+                            IPid thd_pid, const SymEv &thd, bool rowe_obs) const;
   /* Reconstruct the above-vector clock of a blocked event with IID
    * iid. */
   VClock<IPid> reconstruct_blocked_clock(IID<IPid> iid) const;
@@ -681,7 +682,7 @@ protected:
    *
    * All pairs in seen should be increasing indices into prefix.
    */
-  void see_event_pairs(const VecSet<std::pair<int,int>> &seen);
+  void see_event_pairs(const VecSet<std::tuple<int,int,int>> &seen);
   /* Adds a non-reversible happens-before edge between first and
    * second.
    */

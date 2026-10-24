@@ -738,7 +738,7 @@ void TSOTraceBuilder::do_atomic_store(const SymData &sd){
   }
 
   VecSet<int> seen_accesses;
-  VecSet<std::pair<int,int>> seen_pairs;
+  VecSet<std::tuple<int,int,int>> seen_pairs;
 
   /* See previous updates reads to ml */
   for(SymAddr b : ml){
@@ -752,7 +752,7 @@ void TSOTraceBuilder::do_atomic_store(const SymData &sd){
       if (i < 0) continue;
       const IPid last_read_pid = prefix[i].iid.get_pid();
       if(last_read_pid != tipid) seen_accesses.insert(i);
-      if (lu >= 0 && i > lu && prefix[lu].iid.get_pid() != last_read_pid+1)
+      if (lu >= 0 && i > lu && (conf.memory_model != Configuration::TSO || conf.dpor_algorithm == Configuration::OBSERVERS || prefix[lu].iid.get_pid() != last_read_pid+1))
         lu_before_read = true;
     }
 
@@ -777,6 +777,9 @@ void TSOTraceBuilder::do_atomic_store(const SymData &sd){
     bi.last_update_ml = ml;
     if(is_update && threads[tipid].store_buffer.front().last_rowe >= 0){
       bi.last_read[tipid/2] = threads[tipid].store_buffer.front().last_rowe;
+      if (conf.dpor_algorithm == Configuration::OBSERVERS) {
+        observe_memory(b, bi, seen_accesses, seen_pairs, true);
+      }
     }
     wakeup(Access::W,b);
   }
@@ -840,7 +843,7 @@ bool TSOTraceBuilder::atomic_rmw(const SymData &sd, RmwAction action) {
   }
 
   VecSet<int> seen_accesses;
-  VecSet<std::pair<int,int>> seen_pairs;
+  VecSet<std::tuple<int,int,int>> seen_pairs;
 
   /* See previous updates & reads to ml */
   for(SymAddr b : ml){
@@ -921,7 +924,7 @@ bool TSOTraceBuilder::xchg_await(const SymData &sd, AwaitCond cond) {
 
   VecSet<int> seen_accesses;
   VecSet<int> &happens_after_later = curev().happens_after_later;
-  VecSet<std::pair<int,int>> seen_pairs;
+  VecSet<std::tuple<int,int,int>> seen_pairs;
 
   /* Clear it from blocked_awaits, if it is present. */
   auto it = blocked_awaits.find(ml.addr);
@@ -1066,7 +1069,7 @@ void TSOTraceBuilder::do_load(const SymAddrSize &ml){
 
   /* Load from memory */
   VecSet<int> seen_accesses;
-  VecSet<std::pair<int,int>> seen_pairs;
+  VecSet<std::tuple<int,int,int>> seen_pairs;
 
   /* See all updates to the read bytes. */
   for(SymAddr b : ml){
@@ -1132,7 +1135,7 @@ bool TSOTraceBuilder::load_await(const SymAddrSize &ml, AwaitCond cond) {
   assert(threads[ipid].store_buffer.empty());
 
   VecSet<int> &happens_after_later = curev().happens_after_later;
-  VecSet<std::pair<int,int>> seen_pairs;
+  VecSet<std::tuple<int,int,int>> seen_pairs;
 
   /* Clear it from blocked_awaits, if it is present. */
   auto it = blocked_awaits.find(ml.addr);
@@ -1306,7 +1309,7 @@ bool TSOTraceBuilder::full_memory_conflict(){
 
   /* See all previous memory accesses */
   VecSet<int> seen_accesses;
-  VecSet<std::pair<int,int>> seen_pairs;
+  VecSet<std::tuple<int,int,int>> seen_pairs;
   for(auto it = mem.begin(); it != mem.end(); ++it){
     observe_memory(it->first, it->second, seen_accesses, seen_pairs, true);
     it->second.before_unordered = {prefix_idx}; // Not needed?
@@ -1360,9 +1363,10 @@ static void add_to_seen
 
 void TSOTraceBuilder::observe_memory(SymAddr ml, ByteInfo &m,
                                      VecSet<int> &seen_accesses,
-                                     VecSet<std::pair<int,int>> &seen_pairs,
+                                     VecSet<std::tuple<int,int,int>> &seen_pairs,
                                      bool is_update){
   IPid ipid = curev().iid.get_pid();
+  IPid tipid = ipid & ~0x1;
   int lu = m.last_update;
   if(0 <= lu){
     IPid lu_tipid = prefix[lu].iid.get_pid() & ~0x1;
@@ -1377,7 +1381,15 @@ void TSOTraceBuilder::observe_memory(SymAddr ml, ByteInfo &m,
         /* Add races */
         for (const std::pair<IPid,unsigned> &u : m.unordered_updates) {
           if (u.second != unsigned(lu)) {
-            seen_pairs.insert(std::pair<int,int>(u.second, lu));
+            if (is_update
+             && threads[tipid].store_buffer.size()
+             && threads[tipid].store_buffer.front().last_rowe >= 0
+             && lu == prefix_idx) {
+              assert(m.last_read[ipid/2] == threads[tipid].store_buffer.front().last_rowe);
+              seen_pairs.insert(std::tuple<int,int,int>(u.second, lu, m.last_read[ipid/2]));
+            } else {
+              seen_pairs.insert(std::tuple<int,int,int>(u.second, lu, prefix_idx));
+            }
           }
         }
         m.unordered_updates.clear();
@@ -1814,7 +1826,7 @@ void unordered_vector_delete(std::vector<T> &vec, std::size_t pos) {
 
 void
 TSOTraceBuilder::obs_sleep_wake(struct obs_sleep &sleep, const Event &e) const{
-  if (conf.memory_model == Configuration::TSO) {
+  if (conf.memory_model == Configuration::TSO && conf.dpor_algorithm != Configuration::OBSERVERS) {
     assert(!conf.commute_rmws);
     for (unsigned i = 0; i < sleep.sleep.size();) {
       if (e.wakeup.count(sleep.sleep[i].pid)) {
@@ -1840,10 +1852,10 @@ TSOTraceBuilder::obs_sleep_wake(struct obs_sleep &sleep, const Event &e) const{
 }
 
 static bool symev_does_load(const SymEv &e) {
-  return e.kind == SymEv::LOAD || e.kind == SymEv::ROWE_LOAD
+  return e.kind == SymEv::LOAD || e.kind == SymEv::RMW
     || e.kind == SymEv::CMPXHG || e.kind == SymEv::CMPXHGFAIL
     || e.kind == SymEv::LOAD_AWAIT || e.kind == SymEv::XCHG_AWAIT
-    || e.kind == SymEv::FULLMEM || e.kind == SymEv::RMW;
+    || e.kind == SymEv::FULLMEM;
 }
 
 TSOTraceBuilder::obs_wake_res
@@ -2184,9 +2196,10 @@ void TSOTraceBuilder::see_events(const VecSet<int> &seen_accesses){
 }
 
 void TSOTraceBuilder::see_event_pairs
-(const VecSet<std::pair<int,int>> &seen_accesses){
-  for (std::pair<int,int> p : seen_accesses){
-    add_observed_race(p.first, p.second);
+(const VecSet<std::tuple<int,int,int>> &seen_accesses){
+  for (std::tuple<int,int,int> p : seen_accesses){
+    auto [first, second, third] = p;
+    add_observed_race(first, second, third);
   }
 }
 
@@ -2221,12 +2234,14 @@ void TSOTraceBuilder::add_lock_fail_race(int event){
   lock_fail_races.push_back(Race::LockFail(event,prefix_idx,curev().iid));
 }
 
-void TSOTraceBuilder::add_observed_race(int first, int second){
+void TSOTraceBuilder::add_observed_race(int first, int second, int witness){
   assert(0 <= first);
   assert(first < second);
-  assert(second < prefix_idx);
   assert(do_events_conflict(first, second));
-  assert(do_events_conflict(second, prefix_idx));
+  assert(second < witness
+    || prefix[second].iid.get_pid() == prefix[witness].iid.get_pid() + 1);
+  assert(do_events_conflict(second, witness)
+    || prefix[second].iid.get_pid() == prefix[witness].iid.get_pid() + 1);
 
   std::vector<Race> &races = prefix[second].races;
   if (races.size()) {
@@ -2234,11 +2249,11 @@ void TSOTraceBuilder::add_observed_race(int first, int second){
     if (prev.kind == Race::OBSERVED
         && prev.first_event == first
         && prev.second_event == second
-        && prev.witness_event == prefix_idx)
+        && prev.witness_event == witness)
       return;
   }
 
-  races.push_back(Race::Observed(first,second,prefix_idx));
+  races.push_back(Race::Observed(first,second,witness));
 }
 
 void TSOTraceBuilder::add_happens_after(unsigned second, unsigned first){
@@ -2545,17 +2560,21 @@ bool TSOTraceBuilder::do_events_conflict
   return false;
 }
 
+bool TSOTraceBuilder::is_observed_conflict(int i, int j, int k) const {
+  return is_observed_conflict(prefix[i], prefix[j], prefix[k], k < j);
+}
+
 bool TSOTraceBuilder::is_observed_conflict
-(const Event &fst, const Event &snd, const Event &thd) const{
+(const Event &fst, const Event &snd, const Event &thd, bool rowe_obs) const{
   return is_observed_conflict(fst.iid.get_pid(), fst.sym,
                               snd.iid.get_pid(), snd.sym,
-                              thd.iid.get_pid(), thd.sym);
+                              thd.iid.get_pid(), thd.sym, rowe_obs);
 }
 
 bool TSOTraceBuilder::is_observed_conflict
 (IPid fst_pid, const sym_ty &fst,
  IPid snd_pid, const sym_ty &snd,
- IPid thd_pid, const sym_ty &thd) const{
+ IPid thd_pid, const sym_ty &thd, bool rowe_obs) const{
   if (fst_pid == snd_pid) return false;
   for (const SymEv &fe : fst) {
     if (fe.kind != SymEv::UNOBS_STORE) continue;
@@ -2563,7 +2582,7 @@ bool TSOTraceBuilder::is_observed_conflict
       if (se.kind != SymEv::STORE
           || !fe.addr().overlaps(se.addr())) continue;
       for (const SymEv &te : thd) {
-        if (is_observed_conflict(fst_pid, fe, snd_pid, se, thd_pid, te)) {
+        if (is_observed_conflict(fst_pid, fe, snd_pid, se, thd_pid, te, rowe_obs)) {
           return true;
         }
       }
@@ -2575,13 +2594,15 @@ bool TSOTraceBuilder::is_observed_conflict
 bool TSOTraceBuilder::is_observed_conflict
 (IPid fst_pid, const SymEv &fst,
  IPid snd_pid, const SymEv &snd,
- IPid thd_pid, const SymEv &thd) const {
+ IPid thd_pid, const SymEv &thd, bool rowe_obs) const {
   assert(fst_pid != snd_pid);
   assert(fst.kind == SymEv::UNOBS_STORE);
   assert(snd.kind == SymEv::STORE);
   assert(fst.addr().overlaps(snd.addr()));
   if (thd.kind == SymEv::FULLMEM) return true;
-  return symev_does_load(thd) && thd.addr().overlaps(snd.addr());
+  return (symev_does_load(thd)
+    || (thd.kind == SymEv::ROWE_LOAD && thd_pid + 1 == snd_pid && rowe_obs))
+    && thd.addr().overlaps(snd.addr());
 }
 
 void TSOTraceBuilder::do_race_detect() {
@@ -2921,8 +2942,9 @@ wakeup_sequence(const Race &race) const{
       ++exclude;
     } else if (prefix[k].clock.intersects_below(exclude_clock)) {
       /* continue */
-    } else if (!first.clock.leq(prefix[k].clock) &&
-              (true || conf.memory_model != Configuration::TSO || k < j)) {
+    } else if (!first.clock.leq(prefix[k].clock)
+        && (true || conf.memory_model != Configuration::TSO || k < j)
+        && (race.kind != Race::OBSERVED || k != race.witness_event)) {
       auto symbranch = branch_with_symbolic_data(k);
       for (auto &ke : symbranch.sym) {
         if (ke.kind == SymEv::LOAD) {
@@ -2948,7 +2970,7 @@ wakeup_sequence(const Race &race) const{
       if (!std::any_of(observers.begin(), observers.end(),
                        [this,k](const Event* o){
                          return o->clock.leq(prefix[k].clock); })){
-        if (is_observed_conflict(first, second, prefix[k])){
+        if (is_observed_conflict(i, j, k)){
           assert(!observers.empty() || k == race.witness_event);
           observers.push_back(&prefix[k]);
         } else if (race.kind == Race::OBSERVED) {
@@ -2971,6 +2993,11 @@ wakeup_sequence(const Race &race) const{
     int k = race.witness_event;
     Branch first_br = branch_with_symbolic_data(i);
     Branch witness_br = branch_with_symbolic_data(k);
+    for (auto &se : witness_br.sym) {
+      if (se.kind == SymEv::ROWE_LOAD) {
+        se.kind = SymEv::LOAD;
+      }
+    }
     /* Only replay the racy event. */
     witness_br.size = 1;
 
