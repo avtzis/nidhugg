@@ -42,6 +42,7 @@ struct SymEv {
     LOAD,
     ROWE_LOAD,
     LOAD_AWAIT,
+    ROWE_LOAD_AWAIT,
     STORE,
     FULLMEM, /* Observe & clobber everything */
 
@@ -101,6 +102,9 @@ struct SymEv {
   static SymEv LoadAwait(SymAddrSize addr, AwaitCond cond) {
     return {LOAD_AWAIT, addr, std::move(cond)};
   }
+  static SymEv RoweLoadAwait(SymAddrSize addr, AwaitCond cond, int pu) {
+    return {ROWE_LOAD_AWAIT, addr, std::move(cond), pu};
+  }
   static SymEv Store(SymData addr) { return {STORE, std::move(addr)}; }
   static SymEv Rmw(SymData addr, RmwAction action) {
     assert(addr.get_block());
@@ -150,7 +154,7 @@ struct SymEv {
   bool has_data() const;
   bool has_expected() const;
   bool has_rmwaction() const { return kind == RMW; }
-  bool has_cond() const { return kind == LOAD_AWAIT || kind == XCHG_AWAIT; }
+  bool has_cond() const { return kind == LOAD_AWAIT || kind == ROWE_LOAD_AWAIT || kind == XCHG_AWAIT; }
   bool empty() const { return kind == NONE; }
   const SymAddrSize &addr()   const { assert(has_addr()); return arg.addr; }
         int          num()    const { assert(has_num()); return arg.num; }
@@ -187,6 +191,10 @@ private:
   SymEv(enum kind kind, union arg arg, AwaitCond cond)
     : kind(kind), arg(arg), arg2(cond.op),
     _expected(std::move(cond.operand)) {}
+  SymEv(enum kind kind, union arg arg, AwaitCond cond, int pu)
+    : kind(kind), arg(arg), arg2(cond.op),
+      _expected(std::move(cond.operand)),
+      pending_updates(pu), pu_counter(pu) {}
   SymEv(enum kind kind, SymData addr_written)
     : kind(kind), arg(std::move(addr_written.get_ref())),
       _written(std::move(addr_written.get_shared_block())) {}

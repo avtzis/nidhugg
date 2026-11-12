@@ -604,9 +604,9 @@ protected:  // Helper functions
   virtual void callAtexit(Function *F, const std::vector<GenericValue> &ArgVals);
   virtual void callLoadAwait(Function *F, const std::vector<GenericValue> &ArgVals);
   virtual void callXchgAwait(Function *F, const std::vector<GenericValue> &ArgVals);
+  virtual void CheckAwaitWakeup(const GenericValue &Val, const void *ptr, const SymAddrSize &sas);
 
 private:
-  void CheckAwaitWakeup(const GenericValue &Val, const void *ptr, const SymAddrSize &sas);
   bool isAnyAwait(Instruction &I, GenericValue **ptr, AwaitCond *cond,
                   const char *name_prefix, unsigned nargs);
 };

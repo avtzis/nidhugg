@@ -167,7 +167,7 @@ bool TSOTraceBuilder::schedule(int *proc, int *aux, int *alt, bool *dryrun){
           clear_observed(expected);
         assert(curbranch().sym == expected
             || std::any_of(expected.begin(), expected.end(),
-                    [](const SymEv &e) { return e.kind == SymEv::ROWE_LOAD; }));
+                    [](const SymEv &e) { return e.kind == SymEv::ROWE_LOAD || e.kind == SymEv::ROWE_LOAD_AWAIT; }));
 #endif
       } else {
         Branch b = curbranch();
@@ -981,10 +981,6 @@ bool TSOTraceBuilder::xchg_await(const SymData &sd, AwaitCond cond) {
 }
 
 bool TSOTraceBuilder::xchg_await_fail(const SymData &sd, AwaitCond cond) {
-  if (conf.memory_model != Configuration::SC) {
-    invalid_input_error("Exchange-Await is only implemented for SC right now");
-    return false;
-  }
   assert(!dryrun);
 
   auto iid = curev().iid;
@@ -1115,11 +1111,22 @@ bool TSOTraceBuilder::compare_exchange
 
 bool TSOTraceBuilder::load_await(const SymAddrSize &ml, AwaitCond cond) {
   curev().may_conflict = true;
-  if (conf.memory_model != Configuration::SC) {
-    invalid_input_error("Load-Await is only implemented for SC right now");
-    return false;
+  IPid ipid = dryrun ? prefix[prefix_idx+1].sleep[dry_sleepers-1] : curev().iid.get_pid();
+
+  bool is_rowe = false;
+  unsigned ml_writes = 0;
+  for(int i = int(threads[ipid].store_buffer.size())-1; 0 <= i; --i){
+    if(threads[ipid].store_buffer[i].ml.addr == ml.addr){
+      is_rowe = true;
+      ++ml_writes;
+    }
   }
-  if (!record_symbolic(SymEv::LoadAwait(ml, cond))) return false;
+
+  if (is_rowe) {
+    if (!record_symbolic(SymEv::RoweLoadAwait(ml, std::move(cond), ml_writes))) return false;
+  } else {
+    if (!record_symbolic(SymEv::LoadAwait(ml, std::move(cond)))) return false;
+  }
 
   if (dryrun) {
     assert(prefix_idx+1 < int(prefix.len()));
@@ -1131,11 +1138,6 @@ bool TSOTraceBuilder::load_await(const SymAddrSize &ml, AwaitCond cond) {
     }
     return true;
   }
-  IPid ipid = curev().iid.get_pid();
-  assert(threads[ipid].store_buffer.empty());
-
-  VecSet<int> &happens_after_later = curev().happens_after_later;
-  VecSet<std::tuple<int,int,int>> seen_pairs;
 
   /* Clear it from blocked_awaits, if it is present. */
   auto it = blocked_awaits.find(ml.addr);
@@ -1144,8 +1146,30 @@ bool TSOTraceBuilder::load_await(const SymAddrSize &ml, AwaitCond cond) {
     if (it->second.empty()) blocked_awaits.erase(it);
   }
 
+  if (is_rowe) {
+    for(int i = int(threads[ipid].store_buffer.size())-1; 0 <= i; --i){
+      if(threads[ipid].store_buffer[i].ml.addr == ml.addr){
+        threads[ipid].store_buffer[i].last_rowe = prefix_idx;
+        break;
+      }
+    }
+    return true;
+  }
+
+  assert(!has_pending_store(ipid, ml.addr));
+  VecSet<int> &happens_after_later = curev().happens_after_later;
+  VecSet<std::tuple<int,int,int>> seen_pairs;
+
   for (SymAddr b : ml) {
     ByteInfo &bi = mem[b];
+    int lu = bi.last_update;
+    const SymAddrSize &lu_ml = bi.last_update_ml;
+    if(0 <= lu){
+      IPid lu_tipid = prefix[lu].iid.get_pid() & ~0x1;
+      if(lu_tipid == ipid && ml != lu_ml && lu != prefix_idx){
+        add_happens_after(prefix_idx, lu);
+      }
+    }
     observe_memory(b, bi, happens_after_later, seen_pairs, false);
 
     /* Register load in memory */
@@ -1158,10 +1182,6 @@ bool TSOTraceBuilder::load_await(const SymAddrSize &ml, AwaitCond cond) {
 }
 
 bool TSOTraceBuilder::load_await_fail(const SymAddrSize &ml, AwaitCond cond) {
-  if (conf.memory_model != Configuration::SC) {
-    invalid_input_error("Load-Await is only implemented for SC right now");
-    return false;
-  }
   assert(!dryrun);
 
   auto iid = curev().iid;
@@ -1219,6 +1239,12 @@ bool TSOTraceBuilder::do_await(unsigned j, const IID<IPid> &iid, const SymEv &e,
     if (!std::any_of(ie.sym.begin(), ie.sym.end(),
                      [&ml](const SymEv &e) { return symev_does_store(e)
                          && e.addr().overlaps(ml); })) {
+      continue;
+    }
+    if (ie.iid.get_pid() == iid.get_pid() + 1) {
+      if (shadows_all_of(ie.sym, ml)) {
+        break;
+      }
       continue;
     }
     can_stop = can_stop || shadows_all_of(ie.sym, ml);
@@ -1858,6 +1884,11 @@ static bool symev_does_load(const SymEv &e) {
     || e.kind == SymEv::FULLMEM;
 }
 
+static bool symev_is_rowe(const SymEv &e) {
+  return e.kind == SymEv::ROWE_LOAD
+    || e.kind == SymEv::ROWE_LOAD_AWAIT;
+}
+
 TSOTraceBuilder::obs_wake_res
 TSOTraceBuilder::obs_sleep_wake(struct obs_sleep &sleep,
                                 IPid p, const sym_ty &sym) const {
@@ -1933,10 +1964,10 @@ bool TSOTraceBuilder::mutate_sleeper
       if (fe.has_addr() && se.has_addr()
        && fe.addr().overlaps(se.addr())
        && fst_pid == slp_pid + 1
-       && symev_is_store(fe) && se.kind == SymEv::ROWE_LOAD
+       && symev_is_store(fe) && symev_is_rowe(se)
        && --se.pu_counter <= 0) {
         assert(se.pu_counter == 0);
-        se.kind = SymEv::LOAD;
+        se.kind = se.kind == SymEv::ROWE_LOAD ? SymEv::LOAD : SymEv::LOAD_AWAIT;
         se.pu_counter = se.pending_updates;
         return true;
       }
@@ -2355,7 +2386,12 @@ void TSOTraceBuilder::compute_vclocks(){
                     [](const SymEv &e) { return e.has_cond(); })) {
       const SymEv &aw = prefix[i].sym[0];
       assert(prefix[i].sym.size() == 1);
+      if (aw.kind != SymEv::ROWE_LOAD_AWAIT) {
+        /* Awaits satisfied by a ROWE do not conflict with earlier updates
+         * (ie. they cannot have a src-ct edge).
+         */
       do_await(i, prefix[i].iid, aw, prefix[i].clock, races);
+      }
     }
 
     /* Now we want add the possibly reversible edges, but first we must
@@ -2504,7 +2540,8 @@ static bool symev_has_pid(const SymEv &e) {
 
 static bool symev_is_load(const SymEv &e) {
   return e.kind == SymEv::LOAD || e.kind == SymEv::CMPXHGFAIL
-    || e.kind == SymEv::LOAD_AWAIT || e.kind == SymEv::ROWE_LOAD;
+    || e.kind == SymEv::LOAD_AWAIT || e.kind == SymEv::ROWE_LOAD
+    || e.kind == SymEv::ROWE_LOAD_AWAIT;
 }
 
 static bool symev_is_unobs_store(const SymEv &e) {
@@ -2532,8 +2569,8 @@ bool TSOTraceBuilder::do_symevs_conflict
     if (snd.has_addr()) {
       return fst.addr().overlaps(snd.addr())
           && fst_pid / 2 != snd_pid / 2
-          && (assertion || fst.kind != SymEv::ROWE_LOAD)
-          && snd.kind != SymEv::ROWE_LOAD;
+          && (assertion || !symev_is_rowe(fst))
+          && !symev_is_rowe(snd);
     } else {
       return false;
     }
@@ -2947,16 +2984,16 @@ wakeup_sequence(const Race &race) const{
         && (race.kind != Race::OBSERVED || k != race.witness_event)) {
       auto symbranch = branch_with_symbolic_data(k);
       for (auto &ke : symbranch.sym) {
-        if (ke.kind == SymEv::LOAD) {
+        if (ke.kind == SymEv::LOAD || ke.kind == SymEv::LOAD_AWAIT) {
           for (auto &eu : excluded_updates) {
             if (kiid.get_pid() + 1 == eu.first && ke.addr().overlaps(eu.second)) {
-              ke.kind = SymEv::ROWE_LOAD;
+              ke.kind = (ke.kind == SymEv::LOAD) ? SymEv::ROWE_LOAD : SymEv::ROWE_LOAD_AWAIT;
               ke.pending_updates = ke.pu_counter = 0;
               break;
             }
           }
         }
-        if (ke.kind == SymEv::ROWE_LOAD) {
+        if (symev_is_rowe(ke)) {
           for (auto &eu : excluded_updates) {
             if (kiid.get_pid() + 1 == eu.first && ke.addr().overlaps(eu.second)) {
               ++ke.pending_updates;
@@ -2996,6 +3033,8 @@ wakeup_sequence(const Race &race) const{
     for (auto &se : witness_br.sym) {
       if (se.kind == SymEv::ROWE_LOAD) {
         se.kind = SymEv::LOAD;
+      } else if (se.kind == SymEv::ROWE_LOAD_AWAIT) {
+        se.kind = SymEv::LOAD_AWAIT;
       }
     }
     /* Only replay the racy event. */

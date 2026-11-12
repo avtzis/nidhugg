@@ -70,6 +70,7 @@ void TSOInterpreter::runAux(int proc, int aux){
   if(DryRun) return;
 
   std::memcpy((uint8_t*)ref,(uint8_t*)blk.get_block(),blk.get_ref().size);
+  CheckAwaitWakeup(llvm::GenericValue(), ref, blk.get_ref());
 
   for(unsigned i = 0; i < tso_threads[proc].store_buffer.size()-1; ++i){
     tso_threads[proc].store_buffer[i] = tso_threads[proc].store_buffer[i+1];
@@ -105,6 +106,7 @@ int TSOInterpreter::newThread(const CPid &cpid){
 bool TSOInterpreter::isFence(llvm::Instruction &I){
   if(llvm::CallInst *CI = llvm::dyn_cast<llvm::CallInst>(&I)){
     llvm::Function *F = CI->getCalledFunction();
+    if(F && F->getName().str().rfind("__VERIFIER_load_await", 0) == 0) return false; //needed? maybe put verifier to extfun_no_fence? xchg?
     if(F && F->isDeclaration() &&
        F->getIntrinsicID() == llvm::Intrinsic::not_intrinsic &&
        conf.extfun_no_fence.count(F->getName().str()) == 0){
@@ -200,6 +202,48 @@ bool TSOInterpreter::checkRefuse(llvm::Instruction &I){
       }
     }
   }
+  /* Refuse if I is a load await and the latest entry in the store buffer
+   * which overlaps with the memory location targeted by I does not
+   * target precisely the same bytes as I, or does not satisfy the condition.
+   */
+  {
+    llvm::GenericValue *ptr;
+    AwaitCond cond;
+    if(isLoadAwait(I, &ptr, &cond)){
+      Option<SymAddrSize> mr = TryGetSymAddrSize(ptr, I.getOperand(2)->getType());
+      if (!mr) {
+        Debug::warn("await-bad-addr")
+          << "Await will segfault";
+        /* Bad address, let execute and crash */
+        return false;
+      }
+      const void *data_ptr = (const void*)ptr;
+      for(int i = int(tso_threads[CurrentThread].store_buffer.size())-1; 0 <= i; --i){
+        if(mr->overlaps(tso_threads[CurrentThread].store_buffer[i].second.get_ref())){
+          if(*mr != tso_threads[CurrentThread].store_buffer[i].second.get_ref()){
+            /* Block until this store buffer entry has disappeared from
+             * the buffer.
+             */
+            tso_threads[CurrentThread].partial_buffer_flush =
+              int(tso_threads[CurrentThread].store_buffer.size()) - i - 1;
+            TB.refuse_schedule();
+            return true;
+          }
+          assert(!(DryRun && DryRunMem.size()));
+          if (!cond.satisfied_by(tso_threads[CurrentThread].store_buffer[i].second)) {
+            if (!TB.load_await_fail(*mr, cond)) {
+              abort();
+              return true;
+            }
+            TB.refuse_schedule();
+            blocking_awaits[*mr].emplace(CurrentThread, std::move(cond));
+            return true;
+          }
+          return false;
+        }
+      }
+    }
+  }
   return Interpreter::checkRefuse(I);
 }
 
@@ -253,6 +297,7 @@ void TSOInterpreter::visitStoreInst(llvm::StoreInst &I){
       return;
     }
     StoreValueToMemory(Val, Ptr, I.getOperand(0)->getType());
+    CheckAwaitWakeup(llvm::GenericValue(), Ptr, sd->get_ref());
   }else{
     /* Store to buffer */
     if(!TB.store(*sd)) { abort(); return; }
@@ -287,4 +332,77 @@ void TSOInterpreter::visitInlineAsm(llvm::CallInst &CS, const std::string &asmst
   }else{
     throw std::logic_error("Unsupported inline assembly: "+asmstr);
   }
+}
+
+void TSOInterpreter::callLoadAwait(llvm::Function *F,
+                                   const std::vector<llvm::GenericValue> &ArgVals) {
+  llvm::GenericValue *Ptr = (llvm::GenericValue*)GVTOP(ArgVals[0]);
+  uint64_t op_int = ArgVals[1].IntVal.getZExtValue();
+  AwaitCond::Op op(static_cast<AwaitCond::Op>(op_int));
+   /* Should be arg2 type, but if well-formed is same as return type */
+  llvm::Type *Ty = F->getReturnType();
+  SymData::block_type operand = SymData::alloc_block(getDataLayout().getTypeStoreSize(Ty));
+  StoreValueToMemory(ArgVals[2],
+                     static_cast<llvm::GenericValue*>((void*)operand.get()), Ty);
+
+  llvm::GenericValue Result;
+  Option<SymAddrSize> Ptr_sas = GetSymAddrSize(Ptr, Ty);
+  if (!Ptr_sas) return;
+
+  if (!TB.load_await(*Ptr_sas, AwaitCond{op, std::move(operand)})) {
+    abort();
+    return;
+  }
+
+  /* Check store buffer for ROWE opportunity */
+  for (int i = int(tso_threads[CurrentThread].store_buffer.size()) - 1; 0 <= i; --i) {
+    if (Ptr_sas->addr == tso_threads[CurrentThread].store_buffer[i].second.get_ref().addr) {
+      /* Read-Own-Write-Early */
+      assert(Ptr_sas->size == tso_threads[CurrentThread].store_buffer[i].second.get_ref().size);
+      LoadValueFromMemory(Result, (llvm::GenericValue*)tso_threads[CurrentThread].store_buffer[i].second.get_block(), Ty);
+      returnValueToCaller(F->getReturnType(), Result);
+      return;
+    }
+  }
+
+  /* Load from memory */
+  assert(!(DryRun && DryRunMem.size()));
+  LoadValueFromMemory(Result, Ptr, Ty);
+  returnValueToCaller(F->getReturnType(), Result);
+}
+
+void TSOInterpreter::callXchgAwait(llvm::Function *F, const std::vector<llvm::GenericValue> &ArgVals) {
+  assert(tso_threads[CurrentThread].store_buffer.empty());
+  Interpreter::callXchgAwait(F, ArgVals);
+}
+
+void TSOInterpreter::CheckAwaitWakeup(const llvm::GenericValue &Val, const void *ptr,
+                                      const SymAddrSize &sas) {
+  assert(!DryRun);
+
+  auto sas_awaits_iter = blocking_awaits.find(sas);
+  if (sas_awaits_iter == blocking_awaits.end()) return;
+  auto &sas_awaits = sas_awaits_iter->second;
+
+  for (auto it = sas_awaits.begin(); it != sas_awaits.end();) {
+    int tid = it->first;
+    bool shadowed = false;
+
+    /* Check if this thread has pending stores to sas in its store buffer */
+    for (int i = int(tso_threads[tid].store_buffer.size()) - 1; 0 <= i; --i) {
+      if (sas.overlaps(tso_threads[tid].store_buffer[i].second.get_ref())) {
+        /* Ignore checking this blocked await since it can't read from memory */
+        shadowed = true;
+        break;
+      }
+    }
+
+    if (!shadowed && it->second.satisfied_by(ptr, sas.size)) {
+      TB.mark_available(tid);
+      it = sas_awaits.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  if (sas_awaits.empty()) blocking_awaits.erase(sas_awaits_iter);
 }

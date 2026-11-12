@@ -29,7 +29,9 @@ bool SymEv::is_compatible_with(SymEv other) const {
       && !(kind == M_TRYLOCK && other.kind == M_TRYLOCK_FAIL)
       && !(kind == M_TRYLOCK_FAIL && other.kind == M_TRYLOCK)
       && !(kind == LOAD && other.kind == ROWE_LOAD)
-      && !(kind == ROWE_LOAD && other.kind == LOAD))
+      && !(kind == ROWE_LOAD && other.kind == LOAD)
+      && !(kind == LOAD_AWAIT && other.kind == ROWE_LOAD_AWAIT)
+      && !(kind == ROWE_LOAD_AWAIT && other.kind == LOAD_AWAIT))
     return false;
   if (kind == RMW) {
     if (arg2.rmw_kind != other.arg2.rmw_kind) return false;
@@ -41,7 +43,7 @@ bool SymEv::is_compatible_with(SymEv other) const {
     }
   }
   switch(kind) {
-  case LOAD_AWAIT: case XCHG_AWAIT:
+  case LOAD_AWAIT: case ROWE_LOAD_AWAIT: case XCHG_AWAIT:
     if (arg2.await_op != other.arg2.await_op) return false;
     if (_expected) {
       assert(other._expected);
@@ -100,6 +102,10 @@ std::string SymEv::to_string(std::function<std::string(int)> pid_str) const {
       return "LoadAwait(" + arg.addr.to_string(pid_str) + ", "
         + AwaitCond::name(arg2.await_op) + " "
         + block_to_string(_expected, arg.addr.size) + ")";
+    case ROWE_LOAD_AWAIT:
+      return "RoweLoadAwait(" + arg.addr.to_string(pid_str) + ", "
+        + AwaitCond::name(arg2.await_op) + " "
+        + block_to_string(_expected, arg.addr.size) + ")";
     case STORE:    return "Store("   + arg.addr.to_string(pid_str)
         + "," + block_to_string(_written, arg.addr.size) + ")";
     case FULLMEM:  return "Fullmem()";
@@ -147,7 +153,7 @@ std::string SymEv::to_string(std::function<std::string(int)> pid_str) const {
 
 bool SymEv::has_addr() const {
   switch(kind) {
-  case LOAD: case ROWE_LOAD: case LOAD_AWAIT:
+  case LOAD: case ROWE_LOAD: case LOAD_AWAIT: case ROWE_LOAD_AWAIT:
   case M_INIT: case M_LOCK: case M_UNLOCK:
   case M_DELETE: case M_TRYLOCK: case M_TRYLOCK_FAIL:
   case C_INIT: case C_SIGNAL: case C_BRDCST: case C_DELETE:
@@ -171,7 +177,7 @@ bool SymEv::has_num() const {
   case NONE:
   case C_WAIT: case C_AWAKE:
   case FULLMEM:
-  case LOAD: case ROWE_LOAD: case LOAD_AWAIT:
+  case LOAD: case ROWE_LOAD: case LOAD_AWAIT: case ROWE_LOAD_AWAIT:
   case M_INIT: case M_LOCK: case M_UNLOCK:
   case M_DELETE: case M_TRYLOCK: case M_TRYLOCK_FAIL:
   case C_INIT: case C_SIGNAL: case C_BRDCST: case C_DELETE:
@@ -192,7 +198,7 @@ bool SymEv::has_data() const {
   case NONDET:
   case C_WAIT: case C_AWAKE:
   case FULLMEM:
-  case LOAD: case ROWE_LOAD: case LOAD_AWAIT:
+  case LOAD: case ROWE_LOAD: case LOAD_AWAIT: case ROWE_LOAD_AWAIT:
   case M_INIT: case M_LOCK: case M_UNLOCK: case M_DELETE:
   case M_TRYLOCK: case M_TRYLOCK_FAIL:
   case C_INIT: case C_SIGNAL: case C_BRDCST: case C_DELETE:
@@ -210,7 +216,7 @@ bool SymEv::has_expected() const {
   case NONDET:
   case C_WAIT: case C_AWAKE:
   case FULLMEM:
-  case LOAD: case ROWE_LOAD: case LOAD_AWAIT:
+  case LOAD: case ROWE_LOAD: case LOAD_AWAIT: case ROWE_LOAD_AWAIT:
   case STORE: case UNOBS_STORE:
   case M_INIT: case M_LOCK: case M_UNLOCK: case M_DELETE:
   case M_TRYLOCK: case M_TRYLOCK_FAIL:

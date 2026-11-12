@@ -57,6 +57,9 @@ protected:
   virtual bool isFence(llvm::Instruction &I);
   virtual bool checkRefuse(llvm::Instruction &I);
   virtual void terminate(llvm::Type *RetTy, llvm::GenericValue Result);
+  virtual void callLoadAwait(llvm::Function *F, const std::vector<llvm::GenericValue> &ArgVals);
+  virtual void callXchgAwait(llvm::Function *F, const std::vector<llvm::GenericValue> &ArgVals);
+  virtual void CheckAwaitWakeup(const llvm::GenericValue &Val, const void *ptr, const SymAddrSize &sas);
 
   /* Additional information for a thread, supplementing the
    * information in Interpreter::Thread.
