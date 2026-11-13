@@ -129,7 +129,7 @@ public:
   }
   intptr_t operator-(const SymAddr &other) const {
     assert(block == other.block);
-    return offset - other.offset;
+    return intptr_t(offset) - intptr_t(other.offset);
   }
 
   std::string to_string(std::function<std::string(int)> pid_str

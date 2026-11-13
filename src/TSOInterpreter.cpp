@@ -380,29 +380,41 @@ void TSOInterpreter::CheckAwaitWakeup(const llvm::GenericValue &Val, const void 
                                       const SymAddrSize &sas) {
   assert(!DryRun);
 
-  auto sas_awaits_iter = blocking_awaits.find(sas);
-  if (sas_awaits_iter == blocking_awaits.end()) return;
-  auto &sas_awaits = sas_awaits_iter->second;
+  for (auto sas_awaits_iter = blocking_awaits.begin();
+       sas_awaits_iter != blocking_awaits.end();) {
+    const SymAddrSize &await_sas = sas_awaits_iter->first;
+    if (!await_sas.overlaps(sas)) {
+      ++sas_awaits_iter;
+      continue;
+    }
+    const void *await_ptr =
+      static_cast<const uint8_t *>(ptr) + (await_sas.addr - sas.addr);
+    auto &sas_awaits = sas_awaits_iter->second;
 
-  for (auto it = sas_awaits.begin(); it != sas_awaits.end();) {
-    int tid = it->first;
-    bool shadowed = false;
+    for (auto it = sas_awaits.begin(); it != sas_awaits.end();) {
+      int tid = it->first;
+      bool shadowed = false;
 
-    /* Check if this thread has pending stores to sas in its store buffer */
-    for (int i = int(tso_threads[tid].store_buffer.size()) - 1; 0 <= i; --i) {
-      if (sas.overlaps(tso_threads[tid].store_buffer[i].second.get_ref())) {
-        /* Ignore checking this blocked await since it can't read from memory */
-        shadowed = true;
-        break;
+      /* Check if this thread has pending stores to the await sas in its store buffer */
+      for (int i = int(tso_threads[tid].store_buffer.size()) - 1; 0 <= i; --i) {
+        if (await_sas.overlaps(tso_threads[tid].store_buffer[i].second.get_ref())) {
+          /* Ignore checking this blocked await since it can't read from memory */
+          shadowed = true;
+          break;
+        }
+      }
+
+      if (!shadowed && it->second.satisfied_by(await_ptr, await_sas.size)) {
+        TB.mark_available(tid);
+        it = sas_awaits.erase(it);
+      } else {
+        ++it;
       }
     }
-
-    if (!shadowed && it->second.satisfied_by(ptr, sas.size)) {
-      TB.mark_available(tid);
-      it = sas_awaits.erase(it);
+    if (sas_awaits.empty()) {
+      sas_awaits_iter = blocking_awaits.erase(sas_awaits_iter);
     } else {
-      ++it;
+      ++sas_awaits_iter;
     }
   }
-  if (sas_awaits.empty()) blocking_awaits.erase(sas_awaits_iter);
 }

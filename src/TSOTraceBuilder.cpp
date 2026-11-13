@@ -1011,7 +1011,7 @@ bool TSOTraceBuilder::load(const SymAddrSize &ml){
   bool is_rowe = false;
   unsigned ml_writes = 0;
   for(int i = int(threads[ipid].store_buffer.size())-1; 0 <= i; --i){
-    if(threads[ipid].store_buffer[i].ml.addr == ml.addr){
+    if(threads[ipid].store_buffer[i].ml.overlaps(ml)){
       is_rowe = true;
       ++ml_writes;
     }
@@ -1038,7 +1038,8 @@ bool TSOTraceBuilder::load(const SymAddrSize &ml){
 
   if (is_rowe) {
     for(int i = int(threads[ipid].store_buffer.size())-1; 0 <= i; --i){
-      if(threads[ipid].store_buffer[i].ml.addr == ml.addr){
+      if(threads[ipid].store_buffer[i].ml.overlaps(ml)){
+        assert(threads[ipid].store_buffer[i].ml == ml);
         threads[ipid].store_buffer[i].last_rowe = prefix_idx;
         break;
       }
@@ -1089,6 +1090,11 @@ void TSOTraceBuilder::do_load(const SymAddrSize &ml){
     wakeup(Access::R,b);
   }
 
+  int pf = last_unshielded_partial_flush(ipid, prefix_idx, ml);
+  if (pf >= 0) {
+    add_happens_after(prefix_idx, pf);
+  }
+
   seen_accesses.insert(last_full_memory_conflict);
 
   see_events(seen_accesses);
@@ -1116,7 +1122,7 @@ bool TSOTraceBuilder::load_await(const SymAddrSize &ml, AwaitCond cond) {
   bool is_rowe = false;
   unsigned ml_writes = 0;
   for(int i = int(threads[ipid].store_buffer.size())-1; 0 <= i; --i){
-    if(threads[ipid].store_buffer[i].ml.addr == ml.addr){
+    if(threads[ipid].store_buffer[i].ml.overlaps(ml)){
       is_rowe = true;
       ++ml_writes;
     }
@@ -1148,7 +1154,8 @@ bool TSOTraceBuilder::load_await(const SymAddrSize &ml, AwaitCond cond) {
 
   if (is_rowe) {
     for(int i = int(threads[ipid].store_buffer.size())-1; 0 <= i; --i){
-      if(threads[ipid].store_buffer[i].ml.addr == ml.addr){
+      if(threads[ipid].store_buffer[i].ml.overlaps(ml)){
+        assert(threads[ipid].store_buffer[i].ml == ml);
         threads[ipid].store_buffer[i].last_rowe = prefix_idx;
         break;
       }
@@ -1156,11 +1163,11 @@ bool TSOTraceBuilder::load_await(const SymAddrSize &ml, AwaitCond cond) {
     return true;
   }
 
-  assert(!has_pending_store(ipid, ml.addr));
   VecSet<int> &happens_after_later = curev().happens_after_later;
   VecSet<std::tuple<int,int,int>> seen_pairs;
 
   for (SymAddr b : ml) {
+    assert(!has_pending_store(ipid, b));
     ByteInfo &bi = mem[b];
     int lu = bi.last_update;
     const SymAddrSize &lu_ml = bi.last_update_ml;
@@ -1175,6 +1182,11 @@ bool TSOTraceBuilder::load_await(const SymAddrSize &ml, AwaitCond cond) {
     /* Register load in memory */
     mem[b].last_read[ipid/2] = prefix_idx;
     wakeup(Access::R,b);
+  }
+
+  int pf = last_unshielded_partial_flush(ipid, prefix_idx, ml);
+  if (pf >= 0) {
+    add_happens_after(prefix_idx, pf);
   }
 
   see_event_pairs(seen_pairs);
@@ -1241,12 +1253,9 @@ bool TSOTraceBuilder::do_await(unsigned j, const IID<IPid> &iid, const SymEv &e,
                          && e.addr().overlaps(ml); })) {
       continue;
     }
-    if (ie.iid.get_pid() == iid.get_pid() + 1) {
-      if (shadows_all_of(ie.sym, ml)) {
+    if (ie.iid.get_pid() == iid.get_pid() + 1 && shadows_all_of(ie.sym, ml)) {
         break;
       }
-      continue;
-    }
     can_stop = can_stop || shadows_all_of(ie.sym, ml);
     if (conf.commute_rmws) {
       // Optimisation idea: Don't include a set of k's that shadow i
@@ -1852,7 +1861,7 @@ void unordered_vector_delete(std::vector<T> &vec, std::size_t pos) {
 
 void
 TSOTraceBuilder::obs_sleep_wake(struct obs_sleep &sleep, const Event &e) const{
-  if (conf.memory_model == Configuration::TSO && conf.dpor_algorithm != Configuration::OBSERVERS) {
+  if (false && conf.memory_model == Configuration::TSO && conf.dpor_algorithm != Configuration::OBSERVERS) {
     assert(!conf.commute_rmws);
     for (unsigned i = 0; i < sleep.sleep.size();) {
       if (e.wakeup.count(sleep.sleep[i].pid)) {
@@ -2653,6 +2662,10 @@ void TSOTraceBuilder::do_race_detect() {
       const SymEv &ev = pb.second.ev;
       assert(!try_find_process_event(pb.first, iid.get_index()).first);
       VClock<IPid> clock = reconstruct_blocked_clock(iid);
+      int pf = last_unshielded_partial_flush(iid.get_pid(), prefix.len(), ev.addr());
+      if (pf >= 0) {
+        clock += prefix[pf].clock;
+      }
       do_await(prefix.len(), iid, ev, clock, races);
       for (Race &r : races) {
         assert(r.first_event >= 0 && r.first_event < ssize_t(prefix.len()));
@@ -2959,13 +2972,16 @@ wakeup_sequence(const Race &race) const{
     (std::vector<int>(threads.size(), std::numeric_limits<int>::max()));
 
   std::vector<std::pair<IPid, SymAddrSize>> excluded_updates; // VecSet?
+  auto record_excluded_upd = [&](int idx) {
   if (conf.memory_model == Configuration::TSO) {
-    for (auto &se : prefix[i].sym) {
+      for (auto &se : prefix[idx].sym) {
       if (symev_is_store(se)) {
-        excluded_updates.push_back({prefix[i].iid.get_pid(), se.addr()});
+          excluded_updates.push_back({prefix[idx].iid.get_pid(), se.addr()});
       }
     }
   }
+  };
+  record_excluded_upd(i);
 
   for (int k = i + 1; k < int(prefix.len()); ++k){
     assert(exclude == exclude_end || int_fast64_t(*exclude) >= k);
@@ -2977,7 +2993,9 @@ wakeup_sequence(const Race &race) const{
       exclude_clock[kiid.get_pid()]
         = std::min(exclude_clock[kiid.get_pid()], kiid.get_index());
       ++exclude;
+      record_excluded_upd(k);
     } else if (prefix[k].clock.intersects_below(exclude_clock)) {
+      record_excluded_upd(k);
       /* continue */
     } else if (!first.clock.leq(prefix[k].clock)
         && (true || conf.memory_model != Configuration::TSO || k < j)
@@ -3014,12 +3032,8 @@ wakeup_sequence(const Race &race) const{
           notobs.emplace_back(branch_with_symbolic_data(k));
         }
       }
-    } else if (conf.memory_model == Configuration::TSO && first.clock.leq(prefix[k].clock)) {
-      for (auto &se : prefix[k].sym) {
-        if (symev_is_store(se)) {
-          excluded_updates.push_back({prefix[k].iid.get_pid(), se.addr()});
-        }
-      }
+    } else if (first.clock.leq(prefix[k].clock)) {
+      record_excluded_upd(k);
     }
   }
   if (race.kind == Race::NONBLOCK) {
@@ -3388,4 +3402,21 @@ long double TSOTraceBuilder::estimate_trace_count(int idx) const{
   }
 
   return count;
+}
+
+int TSOTraceBuilder::last_unshielded_partial_flush(IPid ipid, int before_idx,
+                                                   const SymAddrSize &ml) const {
+  assert(ipid % 2 == 0);
+  const auto &aux_evs = threads[ipid + 1].event_indices;
+  for (int i = int(aux_evs.size()) - 1; i >= 0; --i) {
+    assert(conf.memory_model == Configuration::TSO);
+    unsigned lu = aux_evs[i];
+    if (int(lu) >= before_idx) continue;
+    for (const SymEv &se : prefix[lu].sym) {
+      if (symev_is_store(se) && se.addr().overlaps(ml)) {
+        return (se.addr() != ml) ? int(lu) : -1;
+      }
+    }
+  }
+  return -1;
 }

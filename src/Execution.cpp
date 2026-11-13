@@ -3082,20 +3082,32 @@ void Interpreter::CheckAwaitWakeup(const GenericValue &Val, const void *ptr,
                                    const SymAddrSize &sas) {
   assert(!DryRun);
 
-  auto sas_awaits_iter = blocking_awaits.find(sas);
-  if (sas_awaits_iter == blocking_awaits.end()) return;
-  auto &sas_awaits = sas_awaits_iter->second;
+  for (auto sas_awaits_iter = blocking_awaits.begin();
+       sas_awaits_iter != blocking_awaits.end();) {
+    const SymAddrSize &await_sas = sas_awaits_iter->first;
+    if (!await_sas.overlaps(sas)) {
+      ++sas_awaits_iter;
+      continue;
+    }
+    const void *await_ptr =
+      static_cast<const uint8_t *>(ptr) + (await_sas.addr - sas.addr);
+    auto &sas_awaits = sas_awaits_iter->second;
 
-  /* Complexity could be improved, but it's unlikely to matter. */
-  for (auto it = sas_awaits.begin(); it != sas_awaits.end();) {
-    if (it->second.satisfied_by(ptr, sas.size)) {
-      TB.mark_available(it->first);
-      it = sas_awaits.erase(it);
+    /* Complexity could be improved, but it's unlikely to matter. */
+    for (auto it = sas_awaits.begin(); it != sas_awaits.end();) {
+      if (it->second.satisfied_by(await_ptr, await_sas.size)) {
+        TB.mark_available(it->first);
+        it = sas_awaits.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    if (sas_awaits.empty()) {
+      sas_awaits_iter = blocking_awaits.erase(sas_awaits_iter);
     } else {
-      ++it;
+      ++sas_awaits_iter;
     }
   }
-  if (sas_awaits.empty()) blocking_awaits.erase(sas_awaits_iter);
 }
 
 //===----------------------------------------------------------------------===//
@@ -3422,7 +3434,6 @@ bool Interpreter::checkRefuse(Instruction &I){
             return true;
           }
           TB.refuse_schedule();
-          /* TODO: Overlapping accesses */
           blocking_awaits[*ptr_sas].emplace(CurrentThread, std::move(cond));
           return true;
         }

@@ -800,6 +800,8 @@ protected:
    * the current one, up to the first idx events.
    */
   long double estimate_trace_count(int idx) const;
+  int last_unshielded_partial_flush(IPid ipid, int before_idx,
+                                    const SymAddrSize &ml) const;
 };
 
 #endif

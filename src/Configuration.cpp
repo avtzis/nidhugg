@@ -239,7 +239,7 @@ void Configuration::assign_by_commandline(){
     /* Source-DPOR and TSO probably work too, and maybe also Observers,
      * but Optimal-DPOR is the only one we've formally proven correct,
      * for now */
-    transform_assume_await = (memory_model == SC
+    transform_assume_await = ((memory_model == SC || memory_model == TSO)
                               && dpor_algorithm == Configuration::OPTIMAL);
   } else {
     transform_assume_await = cl_transform_assume_await == Tristate::TRUE;
@@ -250,7 +250,8 @@ void Configuration::assign_by_commandline(){
   print_progress = cl_print_progress || cl_print_progress_estimate;
   print_progress_estimate = cl_print_progress_estimate;
   debug_print_on_reset = cl_debug_print_on_reset;
-  commute_rmws = !cl_no_commute_rmws && memory_model == SC;
+  commute_rmws = !cl_no_commute_rmws && (memory_model == SC
+                                      || memory_model == TSO);
 #ifndef NO_SMTLIB_SOLVER
   sat_solver = cl_sat;
 #endif
