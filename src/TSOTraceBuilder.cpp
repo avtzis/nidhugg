@@ -1254,8 +1254,8 @@ bool TSOTraceBuilder::do_await(unsigned j, const IID<IPid> &iid, const SymEv &e,
       continue;
     }
     if (ie.iid.get_pid() == iid.get_pid() + 1 && shadows_all_of(ie.sym, ml)) {
-        break;
-      }
+      break;
+    }
     can_stop = can_stop || shadows_all_of(ie.sym, ml);
     if (conf.commute_rmws) {
       // Optimisation idea: Don't include a set of k's that shadow i
@@ -2399,7 +2399,7 @@ void TSOTraceBuilder::compute_vclocks(){
         /* Awaits satisfied by a ROWE do not conflict with earlier updates
          * (ie. they cannot have a src-ct edge).
          */
-      do_await(i, prefix[i].iid, aw, prefix[i].clock, races);
+        do_await(i, prefix[i].iid, aw, prefix[i].clock, races);
       }
     }
 
@@ -2973,19 +2973,19 @@ wakeup_sequence(const Race &race) const{
 
   std::vector<std::pair<IPid, SymAddrSize>> excluded_updates; // VecSet?
   auto record_excluded_upd = [&](int idx) {
-  if (conf.memory_model == Configuration::TSO) {
+    if (conf.memory_model == Configuration::TSO) {
       for (auto &se : prefix[idx].sym) {
-      if (symev_is_store(se)) {
+        if (symev_is_store(se)) {
           excluded_updates.push_back({prefix[idx].iid.get_pid(), se.addr()});
+        }
       }
     }
-  }
   };
   record_excluded_upd(i);
 
   for (int k = i + 1; k < int(prefix.len()); ++k){
     assert(exclude == exclude_end || int_fast64_t(*exclude) >= k);
-      const IID<IPid> &kiid = prefix[k].iid;
+    const IID<IPid> &kiid = prefix[k].iid;
     if (exclude != exclude_end && *exclude == unsigned(k)) {
       /* XXX: We could just build the exclude clock in advance, and rely
        * on the second branch
