@@ -776,8 +776,13 @@ void TSOTraceBuilder::do_atomic_store(const SymData &sd){
     bi.last_update = prefix_idx;
     bi.last_update_ml = ml;
     if(is_update && threads[tipid].store_buffer.front().last_rowe >= 0){
-      bi.last_read[tipid/2] = threads[tipid].store_buffer.front().last_rowe;
-      if (conf.dpor_algorithm == Configuration::OBSERVERS) {
+      int last_rowe = threads[tipid].store_buffer.front().last_rowe;
+      bi.last_read[tipid/2] = last_rowe;
+      if (conf.dpor_algorithm == Configuration::OBSERVERS &&
+          std::any_of(bi.unordered_updates.begin(), bi.unordered_updates.end(),
+                  [last_rowe](const std::pair<IPid, unsigned> &u) {
+                    return u.second < unsigned(last_rowe);
+                  })) {
         observe_memory(b, bi, seen_accesses, seen_pairs, true);
       }
     }
@@ -1372,9 +1377,12 @@ static bool observe_store(sym_ty &syms, const SymAddr &ml) {
   for (auto it = syms.end();;){
     assert(it != syms.begin());
     --it;
-    if((it->kind == SymEv::STORE || it->kind == SymEv::RMW
-        || it->kind == SymEv::CMPXHG || it->kind == SymEv::XCHG_AWAIT)
+    if((it->kind == SymEv::RMW || it->kind == SymEv::CMPXHG
+        || it->kind == SymEv::XCHG_AWAIT)
        && it->addr().includes(ml)) break;
+    if (it->kind == SymEv::STORE && it->addr().includes(ml)) {
+      return true;
+    }
     if (it->kind == SymEv::UNOBS_STORE && it->addr().includes(ml)) {
       *it = SymEv::Store(it->data());
       return true;
@@ -1409,20 +1417,27 @@ void TSOTraceBuilder::observe_memory(SymAddr ml, ByteInfo &m,
       seen_accesses.insert(lu);
     }
     bool did_observe_store = false;
-    if (conf.dpor_algorithm == Configuration::OBSERVERS) {
+    if (conf.dpor_algorithm == Configuration::OBSERVERS
+        && !m.unordered_updates.empty()) {
       /* Update last_update to be an observed store */
       did_observe_store = observe_store(prefix[lu].sym, ml);
       if (did_observe_store) {
         /* Add races */
-        for (const std::pair<IPid,unsigned> &u : m.unordered_updates) {
-          if (u.second != unsigned(lu)) {
-            if (is_update
-             && threads[tipid].store_buffer.size()
-             && threads[tipid].store_buffer.front().last_rowe >= 0
-             && lu == prefix_idx) {
-              assert(m.last_read[ipid/2] == threads[tipid].store_buffer.front().last_rowe);
-              seen_pairs.insert(std::tuple<int,int,int>(u.second, lu, m.last_read[ipid/2]));
-            } else {
+        if (is_update
+            && threads[tipid].store_buffer.size()
+            && threads[tipid].store_buffer.front().last_rowe >= 0
+            && lu == prefix_idx) {
+          int last_rowe = threads[tipid].store_buffer.front().last_rowe;
+          assert(m.last_read[ipid/2] == last_rowe);
+          for (const std::pair<IPid,unsigned> &u : m.unordered_updates) {
+            assert(u.second != unsigned(lu));
+            if (u.second < unsigned(last_rowe)) {
+              seen_pairs.insert(std::tuple<int,int,int>(u.second, lu, last_rowe));
+            }
+          }
+        } else {
+          for (const std::pair<IPid,unsigned> &u : m.unordered_updates) {
+            if (u.second != unsigned(lu)) {
               seen_pairs.insert(std::tuple<int,int,int>(u.second, lu, prefix_idx));
             }
           }
@@ -2997,6 +3012,17 @@ wakeup_sequence(const Race &race) const{
     } else if (prefix[k].clock.intersects_below(exclude_clock)) {
       record_excluded_upd(k);
       /* continue */
+    } else if (race.kind == Race::OBSERVED &&
+               std::any_of(observers.begin(), observers.end(),
+                           [this, k](const Event *o) {
+                             return o->clock.leq(prefix[k].clock);
+                           })) {
+      record_excluded_upd(k);
+    } else if (race.kind == Race::OBSERVED && k != j &&
+               is_observed_conflict(i, j, k)) {
+      assert(conf.memory_model != Configuration::TSO || !observers.empty() || k == race.witness_event);
+      observers.push_back(&prefix[k]);
+      record_excluded_upd(k); // most likely not needed
     } else if (!first.clock.leq(prefix[k].clock)
         && (true || conf.memory_model != Configuration::TSO || k < j)
         && (race.kind != Race::OBSERVED || k != race.witness_event)) {
@@ -3022,16 +3048,7 @@ wakeup_sequence(const Race &race) const{
       }
       v.emplace_back(symbranch);
     } else if (race.kind == Race::OBSERVED && k != j) {
-      if (!std::any_of(observers.begin(), observers.end(),
-                       [this,k](const Event* o){
-                         return o->clock.leq(prefix[k].clock); })){
-        if (is_observed_conflict(i, j, k)){
-          assert(!observers.empty() || k == race.witness_event);
-          observers.push_back(&prefix[k]);
-        } else if (race.kind == Race::OBSERVED) {
-          notobs.emplace_back(branch_with_symbolic_data(k));
-        }
-      }
+      notobs.emplace_back(branch_with_symbolic_data(k));
     } else if (first.clock.leq(prefix[k].clock)) {
       record_excluded_upd(k);
     }
