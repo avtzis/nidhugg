@@ -37,6 +37,12 @@ static Configuration sc_obs_conf(){
   return conf;
 }
 
+static Configuration tso_obs_conf(){
+  Configuration conf = DPORDriver_test::get_tso_conf();
+  conf.dpor_algorithm = Configuration::OBSERVERS;
+  return conf;
+}
+
 BOOST_AUTO_TEST_CASE(lastwrite_4){
   Configuration conf = sc_obs_conf();
   std::string module = StrModule::portasm(R"(
@@ -89,6 +95,11 @@ declare i32 @pthread_join(i64,i8**) nounwind
      {{W2,W1},{W3,W1},{W4,W1}},                         // 04: W1 last
     };
   BOOST_CHECK(DPORDriver_test::check_all_traces(res,expected,conf));
+
+  conf = tso_obs_conf();
+  driver.reset(DPORDriver::parseIR(module, conf));
+  DPORDriver::Result tso_res = driver->run();
+  BOOST_CHECK(tso_res.trace_count == 4);
 }
 
 BOOST_AUTO_TEST_CASE(treewrite_2_3){
@@ -174,6 +185,11 @@ declare i32 @pthread_join(i64, i8**)
        {{C2w,C1w}}},                              // 02: C1 last
      });
   BOOST_CHECK(DPORDriver_test::check_all_traces(res,expected,conf));
+
+  conf = tso_obs_conf();
+  driver.reset(DPORDriver::parseIR(module, conf));
+  DPORDriver::Result tso_res = driver->run();
+  BOOST_CHECK(tso_res.trace_count == 18);
 }
 
 BOOST_AUTO_TEST_CASE(treewrite_3_3){
@@ -269,6 +285,11 @@ declare i32 @pthread_join(i64, i8**)
        {{C2w,C1w},{C3w,C1w}}},                    // 03: C1 last
      });
   BOOST_CHECK(DPORDriver_test::check_all_traces(res,expected,conf));
+
+  conf = tso_obs_conf();
+  driver.reset(DPORDriver::parseIR(module, conf));
+  DPORDriver::Result tso_res = driver->run();
+  BOOST_CHECK(tso_res.trace_count == 81);
 }
 
 BOOST_AUTO_TEST_CASE(condtree_2_3r){
@@ -352,6 +373,11 @@ declare i32 @pthread_join(i64, i8**)
      });
   expected.push_back({{WB1,WB0},{WB2,WB0}});      // WB0 last
   BOOST_CHECK(DPORDriver_test::check_all_traces(res,expected,conf));
+
+  conf = tso_obs_conf();
+  driver.reset(DPORDriver::parseIR(module, conf));
+  DPORDriver::Result tso_res = driver->run();
+  BOOST_CHECK(tso_res.trace_count == 7);
 }
 
 BOOST_AUTO_TEST_CASE(condtree_2_3f){
@@ -434,6 +460,11 @@ declare i32 @pthread_join(i64, i8**)
      });
   expected.push_back({{WA1,WA0},{WA2,WA0}});      // WA0 last
   BOOST_CHECK(DPORDriver_test::check_all_traces(res,expected,conf));
+
+  conf = tso_obs_conf();
+  driver.reset(DPORDriver::parseIR(module, conf));
+  DPORDriver::Result tso_res = driver->run();
+  BOOST_CHECK(tso_res.trace_count == 7);
 }
 
 BOOST_AUTO_TEST_CASE(condtree_3_3f){
@@ -554,6 +585,11 @@ declare i32 @pthread_join(i64, i8**)
   expected.insert(expected.end(), more_expected.begin(), more_expected.end());
   expected.push_back({{WA1,WA0},{WA2,WA0}});      // WA0 last
   BOOST_CHECK(DPORDriver_test::check_all_traces(res,expected,conf));
+
+  conf = tso_obs_conf();
+  driver.reset(DPORDriver::parseIR(module, conf));
+  DPORDriver::Result tso_res = driver->run();
+  BOOST_CHECK(tso_res.trace_count == 15);
 }
 
 BOOST_AUTO_TEST_CASE(condtree_3_3r){
@@ -674,6 +710,11 @@ declare i32 @pthread_join(i64, i8**)
   expected.insert(expected.end(), more_expected.begin(), more_expected.end());
   expected.push_back({{WC1,WC0},{WC2,WC0}});      // WC0 last
   BOOST_CHECK(DPORDriver_test::check_all_traces(res,expected,conf));
+
+  conf = tso_obs_conf();
+  driver.reset(DPORDriver::parseIR(module, conf));
+  DPORDriver::Result tso_res = driver->run();
+  BOOST_CHECK(tso_res.trace_count == 15);
 }
 
 BOOST_AUTO_TEST_CASE(wrong_witness){
@@ -869,6 +910,11 @@ declare void @llvm.memcpy.p0i8.p0i8.i64(i8*, i8*, i64, i32, i1)
 
   /* This could be replaced with a trace set spec */
   BOOST_CHECK(res.trace_count == 2);
+
+  conf = tso_obs_conf();
+  driver.reset(DPORDriver::parseIR(module, conf));
+  DPORDriver::Result tso_res = driver->run();
+  BOOST_CHECK(tso_res.trace_count == 2);
 }
 
 BOOST_AUTO_TEST_CASE(lamport){
@@ -1010,6 +1056,13 @@ declare void @__VERIFIER_assume(i64)
   BOOST_CHECK_EQUAL(res.trace_count, 14);
   BOOST_CHECK_EQUAL(res.assume_blocked_trace_count, 12);
   BOOST_CHECK(DPORDriver_test::check_all_traces(res,expected,conf));
+
+  conf = tso_obs_conf();
+  driver.reset(DPORDriver::parseIR(module, conf));
+  DPORDriver::Result tso_res = driver->run();
+  BOOST_CHECK(tso_res.has_errors());
+  BOOST_CHECK_EQUAL(tso_res.trace_count, 22);
+  BOOST_CHECK_EQUAL(tso_res.assume_blocked_trace_count, 12);
 }
 
 BOOST_AUTO_TEST_CASE(CAS_load){
@@ -1051,6 +1104,11 @@ declare i32 @pthread_create(i64*, %attr_t*, i8*(i8*)*, i8*) nounwind
      {{w,cas},{cas,r}}
     };
   BOOST_CHECK(DPORDriver_test::check_all_traces(res,expected,conf));
+
+  conf = tso_obs_conf();
+  driver.reset(DPORDriver::parseIR(module, conf));
+  DPORDriver::Result tso_res = driver->run();
+  BOOST_CHECK(tso_res.trace_count == 5);
 }
 
 BOOST_AUTO_TEST_CASE(CAS_tricky){
@@ -1092,6 +1150,11 @@ declare i32 @pthread_create(i64*, %attr_t*, i8*(i8*)*, i8*) nounwind
      {{w,cas},{cas,r}}
     };
   BOOST_CHECK(DPORDriver_test::check_all_traces(res,expected,conf));
+
+  conf = tso_obs_conf();
+  driver.reset(DPORDriver::parseIR(module, conf));
+  DPORDriver::Result tso_res = driver->run();
+  BOOST_CHECK(tso_res.trace_count == 5);
 }
 
 BOOST_AUTO_TEST_CASE(CASw2){
@@ -1129,6 +1192,11 @@ declare i32 @pthread_create(i64*, %attr_t*, i8*(i8*)*, i8*) nounwind
      {{w2,cas1}},
    };
   BOOST_CHECK(DPORDriver_test::check_all_traces(res,expected,conf));
+
+  conf = tso_obs_conf();
+  driver.reset(DPORDriver::parseIR(module, conf));
+  DPORDriver::Result tso_res = driver->run();
+  BOOST_CHECK(tso_res.trace_count == 4);
 }
 
 BOOST_AUTO_TEST_CASE(CASw4){
@@ -1159,6 +1227,12 @@ declare i32 @pthread_create(i64*, %attr_t*, i8*(i8*)*, i8*) nounwind
   DPORDriver::Result res = driver->run();
 
   BOOST_CHECK(res.trace_count == 524);
+  BOOST_CHECK(!res.has_errors());
+
+  conf = tso_obs_conf();
+  driver.reset(DPORDriver::parseIR(module, conf));
+  DPORDriver::Result tso_res = driver->run();
+  BOOST_CHECK(tso_res.trace_count == 524);
   BOOST_CHECK(!res.has_errors());
 }
 
@@ -1196,6 +1270,11 @@ declare i32 @pthread_create(i64*, %attr_t*, i8*(i8*)*, i8*) nounwind
      {{w2,w1}},
     };
   BOOST_CHECK(DPORDriver_test::check_all_traces(res,expected,conf));
+
+  conf = tso_obs_conf();
+  driver.reset(DPORDriver::parseIR(module, conf));
+  DPORDriver::Result tso_res = driver->run();
+  BOOST_CHECK(tso_res.trace_count == 2);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

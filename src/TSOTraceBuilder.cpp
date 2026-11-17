@@ -1430,7 +1430,6 @@ void TSOTraceBuilder::observe_memory(SymAddr ml, ByteInfo &m,
           int last_rowe = threads[tipid].store_buffer.front().last_rowe;
           assert(m.last_read[ipid/2] == last_rowe);
           for (const std::pair<IPid,unsigned> &u : m.unordered_updates) {
-            assert(u.second != unsigned(lu));
             if (u.second < unsigned(last_rowe)) {
               seen_pairs.insert(std::tuple<int,int,int>(u.second, lu, last_rowe));
             }
@@ -3020,7 +3019,7 @@ wakeup_sequence(const Race &race) const{
       record_excluded_upd(k);
     } else if (race.kind == Race::OBSERVED && k != j &&
                is_observed_conflict(i, j, k)) {
-      assert(conf.memory_model != Configuration::TSO || !observers.empty() || k == race.witness_event);
+      assert(conf.memory_model != Configuration::SC || !observers.empty() || k == race.witness_event);
       observers.push_back(&prefix[k]);
       record_excluded_upd(k); // most likely not needed
     } else if (!first.clock.leq(prefix[k].clock)

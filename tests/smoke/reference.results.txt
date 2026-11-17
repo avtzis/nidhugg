@@ -1,6 +1,6 @@
 # Results of run nidhugg "count-weak-trace" on all C tests.
 # Nidhugg 0.2 (e27cc312, Release, with LLVM-5.0.2:Release)
-# nidhuggc --sc TEST.c 
+# nidhuggc --sc TEST.c
 # The tests where executed using test-nidhugg.py.
 # Date: 180723-17:16
 
@@ -135,6 +135,24 @@ bug_after_1k_sc Allow : 1716
 bug_after_1k_pso Allow : 1716
 bug_after_1k_rf Allow : 1716
 # bug_after_1k_power Allow : 1716
+
+# TSO-specific tests for Optimal/Observers/Await.
+tso-test1-opt Forbid : 14
+tso-test1-obs Forbid : 8
+tso-test2-opt Forbid : 74
+tso-test2-obs Forbid : 70
+tso-test3-opt Forbid : 12
+tso-test3-obs Forbid : 10
+tso-test4-opt Forbid : 432
+tso-test5-await Forbid : 3
+tso-test6-await Forbid : 2
+tso-test7-await Forbid : 6
+tso-test8-await Forbid : 8
+tso-test9-await Forbid : 15
+tso-test10-await-rmw Forbid : 2
+tso-test11-await-rmw Forbid : 1
+tso-test12-await-rmw Forbid : 1
+tso-test13-await-rmw Forbid : 2
 
 # Total number of traces: 1116
 # Total running time: 9.51 s
